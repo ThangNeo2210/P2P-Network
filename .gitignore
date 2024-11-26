@@ -151,3 +151,9 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+input/
+output/
+logs/
+torrent/
+foundation/
