@@ -1,1 +1,1 @@
-{"peers": {"1": {"peer_id": "peer1", "ip_address": "localhost", "port": 6881, "piece_info": [], "total_uploaded": 0, "total_downloaded": 0, "failed_uploads": 0, "successful_uploads": 0, "network_stats": {"upload_bandwidth": 0.0, "download_bandwidth": 0.0, "latency": 0.0, "active_connections": 0, "cpu_usage": 0.0, "success_rate": 1.0, "uptime": 0.0, "last_update": null}, "last_seen": "2024-11-26 09:22:55.433332"}}}
+{"peers": {}}
