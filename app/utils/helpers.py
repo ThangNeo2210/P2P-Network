@@ -36,7 +36,8 @@ def log_event(event_type: str, message: str, level: str = "info"):
         "warning": Fore.YELLOW,
         "error": Fore.RED,
         "success": Fore.GREEN,
-        "debug": Fore.CYAN
+        "debug": Fore.CYAN,
+        "start": Fore.MAGENTA
     }
     
     # Get color for level
@@ -53,16 +54,16 @@ def log_event(event_type: str, message: str, level: str = "info"):
     
     # Log based on level
     if level == "error":
-        logger.error(file_msg)
+        #logger.error(file_msg)
         print(console_msg)
     elif level == "warning":
-        logger.warning(file_msg)
+        #logger.warning(file_msg)
         print(console_msg)
     elif level == "debug" and logger.level <= logging.DEBUG:
-        logger.debug(file_msg)
+        #logger.debug(file_msg)
         print(console_msg)
     else:
-        logger.info(file_msg)
+        #logger.info(file_msg)
         print(console_msg)
 
 def format_size(size: int) -> str:

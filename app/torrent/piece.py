@@ -1,104 +1,112 @@
 import os
 import hashlib
-from typing import List, Dict
-import math
+from typing import List, Dict, Optional
 from app.utils.helpers import log_event
 from app.config import Config
-import time
-import bencodepy
-
+import base64
 def generate_pieces(file_path: str, piece_length: int) -> List[bytes]:
-    """Generate pieces from input file"""
+    """Generate pieces hash"""
+    pieces = []
+    with open(file_path, 'rb') as f:
+        while True:
+            piece_data = f.read(piece_length)
+            if not piece_data:
+                break
+            piece_hash = hashlib.sha1(piece_data).digest()
+            pieces.append(piece_hash)  # Hash của piece
+    return pieces
+
+def verify_piece(piece_data: bytes, piece_index: int, torrent_data: Dict):
     try:
+        log_event("PEER", f"Piece length in torrent: {torrent_data['info']['piece_length']}", "info")
+        log_event("PEER", f"Actual piece data length: {len(piece_data)}", "info")
+        log_event("PEER", f"First 20 bytes of piece data: {piece_data[:20].hex()}", "info")
+        
+        # 1. Lấy base64 string từ torrent data và decode về bytes
+        pieces_base64 = torrent_data['info']['pieces']  # base64 string
+        all_pieces = base64.b64decode(pieces_base64)    # bytes của concatenated hashes
+        
+        # 2. Lấy hash của piece cần verify
+        piece_hash = all_pieces[piece_index * 20:(piece_index + 1) * 20]
+        log_event("PEER", f"Got hash for piece {piece_index}: {piece_hash.hex()}", "info")
+        
+        # 3. Tính hash của piece data nhận được
+        actual_hash = hashlib.sha1(piece_data).digest()
+        log_event("PEER", f"Calculated hash for piece {piece_index}: {actual_hash.hex()}", "info")
+        
+        return piece_hash == actual_hash
+        
+    except Exception as e:
+        log_event("ERROR", f"Error verifying piece: {e}", "error")
+        return False
+
+def combine_pieces(pieces: List[bytes], output_file: str) -> bool:
+    """
+    Gộp các pieces thành file hoàn chỉnh.
+    
+    Args:
+        pieces: Danh sách các pieces theo thứ tự
+        output_file: Đường dẫn file output
+        
+    Returns:
+        bool: True nếu gộp thành công
+    """
+    try:
+        if not pieces:
+            raise ValueError("No pieces to combine")
+            
+        # Tạo thư mục output nếu chưa tồn tại
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+        # Ghi pieces vào file tạm
+        temp_file = output_file + '.tmp'
+        with open(temp_file, 'wb') as f:
+            for piece in pieces:
+                if not piece:
+                    raise ValueError("Invalid piece data")
+                f.write(piece)
+                
+        # Đổi tên file tạm thành file chính
+        os.rename(temp_file, output_file)
+        return True
+        
+    except Exception as e:
+        log_event("ERROR", f"Error combining pieces: {e}", "error")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        return False
+
+def split_file(file_path: str, piece_length: int) -> List[bytes]:
+    """
+    Chia file thành các pieces có kích thước cố định.
+    
+    Args:
+        file_path: Đường dẫn đến file cần chia
+        piece_length: Kích thước mỗi piece
+        
+    Returns:
+        List[bytes]: Danh sách các pieces
+    """
+    try:
+        if not os.path.exists(file_path):
+            raise ValueError(f"File not found: {file_path}")
+            
+        if not Config.validate_piece_length(piece_length):
+            raise ValueError(f"Invalid piece length: {piece_length}")
+            
         pieces = []
         with open(file_path, 'rb') as f:
             while True:
                 piece_data = f.read(piece_length)
                 if not piece_data:
                     break
-                # Generate SHA1 hash for piece
-                piece_hash = hashlib.sha1(piece_data).digest()
-                pieces.append(piece_hash)
+                pieces.append(piece_data)
+                
         return pieces
         
     except Exception as e:
-        log_event("ERROR", f"Error generating pieces: {e}", "error")
+        log_event("ERROR", f"Error splitting file: {e}", "error")
         return []
 
-def generate_info_hash(file_name: str, piece_length: int, 
-                      pieces: List[bytes], file_length: int) -> str:
-    """Generate info hash for torrent file"""
-    try:
-        # Create info dictionary
-        info = {
-            'name': file_name,
-            'piece length': piece_length,
-            'pieces': b''.join(pieces),
-            'length': file_length
-        }
-        
-        # Generate SHA1 hash of bencoded info
-        import bencodepy
-        info_hash = hashlib.sha1(bencodepy.encode(info)).hexdigest()
-        return info_hash
-        
-    except Exception as e:
-        log_event("ERROR", f"Error generating info hash: {e}", "error")
-        return None
-
-def create_torrent_file(file_name: str, piece_length: int,
-                       pieces: List[bytes], file_length: int, 
-                       output_file: str) -> bool:
-    """Create torrent file from file information"""
-    try:
-        # Generate info hash
-        info_hash = generate_info_hash(
-            file_name, piece_length, pieces, file_length
-        )
-        if not info_hash:
-            return False
-            
-        # Create torrent dictionary
-        torrent_dict = {
-            'info': {
-                'name': file_name,
-                'piece length': piece_length,
-                'pieces': b''.join(pieces),
-                'length': file_length
-            },
-            'info_hash': info_hash,
-            'created by': 'BitTorrent Client',
-            'creation date': int(time.time())
-        }
-        
-        # Write to file
-        with open(output_file, 'wb') as f:
-            f.write(bencodepy.encode(torrent_dict))
-            
-        return True
-        
-    except Exception as e:
-        log_event("ERROR", f"Error creating torrent file: {e}", "error")
-        return False
-
-# def combine_pieces(pieces: List[bytes], output_file: str) -> bool:
-#     """Combine downloaded pieces into complete file"""
-#     try:
-#         if not pieces:
-#             raise ValueError("No pieces to combine")
-            
-#         output_dir = os.path.dirname(output_file)
-#         if output_dir and not os.path.exists(output_dir):
-#             os.makedirs(output_dir)
-            
-#         with open(output_file, 'wb') as f:
-#             for piece in pieces:
-#                 if not piece:
-#                     raise ValueError("Invalid piece data")
-#                 f.write(piece)
-                
-#         return True
-        
-#     except Exception as e:
-#         log_event("ERROR", f"Error combining pieces: {e}", "error")
-#         return False

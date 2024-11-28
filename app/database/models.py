@@ -1,40 +1,44 @@
-from mongoengine import *
-import datetime
+from typing import Dict, List, Any
+from dataclasses import dataclass
 
-class Peer(Document):
-    """Peer information in MongoDB"""
-    ip_address = StringField(required=True)
-    port = IntField(required=True)
-    peer_id = StringField(required=True, unique=True)
-    last_seen = DateTimeField(default=datetime.datetime.utcnow)
-    
-    # Piece information
-    piece_info = ListField(DictField())  # List of {metainfo_id, index, piece}
-    
-    meta = {
-        'collection': 'peers',
-        'indexes': ['peer_id', 'ip_address']
-    }
+@dataclass
+class TorrentModel:
+    """Collection torrents - Chỉ tracker có quyền truy cập"""
+    name: str                # Tên file
+    piece_length: int        # Độ dài tối đa của mỗi piece
+    length: int             # Độ dài file
+    pieces: str             # Chuỗi pieces đã mã hóa base64
+    info_hash: str          # Hash của torrent để định danh
 
-class Torrent(Document):
-    """Torrent information in MongoDB"""
-    info_hash = StringField(required=True, unique=True)
-    info = DictField(required=True)  # {name, piece_length, length, pieces}
-    created_at = DateTimeField(default=datetime.datetime.utcnow)
-    
-    meta = {
-        'collection': 'torrents',
-        'indexes': ['info_hash']
-    }
+@dataclass
+class FileModel:
+    """Collection files - Chỉ tracker có quyền truy cập"""
+    file_name: str          # Tên file
+    metainfo_id: str        # ObjectId của torrent tương ứng
+    peers_info: List[Dict[str, Any]]  # Danh sách peer và pieces họ đang giữ
+    # peers_info structure:
+    # [{
+    #    'peer_id': str,
+    #    'pieces': List[int]  # Danh sách index của pieces
+    # }]
 
-class File(Document):
-    """File information in MongoDB"""
-    file_name = StringField(required=True)
-    metainfo_id = ObjectIdField(required=True)  # Reference to Torrent
-    peers_info = ListField(DictField())  # List of {peer_id, pieces}
-    created_at = DateTimeField(default=datetime.datetime.utcnow)
-    
-    meta = {
-        'collection': 'files',
-        'indexes': ['file_name', 'metainfo_id']
-    } 
+@dataclass
+class PeerModel:
+    """Collection peers - Chỉ peers có quyền truy cập"""
+    peer_id: str           # ID của peer
+    ip_address: str        # IP address
+    port: int             # Port number
+    piece_info: List[Dict[str, Any]]  # Thông tin về pieces peer đang giữ
+    # piece_info structure:
+    # [{
+    #    'metainfo_id': str,  # ObjectId của torrent
+    #    'index': int,        # Index của piece trong chuỗi pieces
+    #    'piece': bytes       # Nội dung của piece
+    # }] 
+
+class FileEntry:
+    def __init__(self, file_name: str, metainfo_id: str):
+        self.file_name = file_name
+        self.metainfo_id = metainfo_id  # info_hash
+        self.pieces = []  # List of piece contents
+        self.piece_hashes = []  # List of piece hashes

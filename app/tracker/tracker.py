@@ -1,80 +1,113 @@
 from typing import List, Dict, Optional
-import hashlib
-from app.database.db import Database
-from app.utils.helpers import log_event
-from app.config import Config
 import socket
 import threading
 import json
 import time
-import bencodepy
 import os
+import signal
+import hashlib
+import base64
+from app.database.tracker_db import TrackerDatabase
+from app.utils.helpers import log_event
+from app.config import Config
+from app.utils.torrent_utils import (
+    get_info_hash,
+    convert_pieces_for_storage,
+    generate_info_hash
+)
 
 class Tracker:
+    """Tracker server để quản lý peers và files"""
+    
     def __init__(self):
-        self.db = Database()
+        self.db = TrackerDatabase()  # Chỉ sử dụng TrackerDatabase
         self.server_socket = None
         self.is_running = False
         self._lock = threading.Lock()
-        self.connected_peers = {}  # Store active peer connections
+        self.connected_peers = {}
+        signal.signal(signal.SIGINT, self._signal_handler)
 
-    def get_all_peer_info(self) -> List[Dict]:
-        """Get all registered peers"""
-        try:
-            peers = self.db.peers.all()
-            return [
-                {
-                    'peer_id': peer['peer_id'],
-                    'ip_address': peer['ip_address'],
-                    'port': peer['port'],
-                    'piece_info': peer['piece_info']
-                }
-                for peer in peers
-            ]
-        except Exception as e:
-            log_event("ERROR", f"Error getting peer info: {e}", "error")
-            return []
+    def _signal_handler(self, sig, frame):
+        """Handle Ctrl+C signal"""
+        print("\nShutting down tracker server...")
+        self.stop_server()
+        import sys
+        sys.exit(0)
 
-    def get_peer(self, name: str) -> Optional[Dict]:
-        """Get specific peer by name/id"""
-        try:
-            peer = self.db.get_peer(name)
-            if peer:
-                return {
-                    'peer_id': peer['peer_id'],
-                    'ip_address': peer['ip_address'],
-                    'port': peer['port'],
-                    'piece_info': peer['piece_info']
-                }
-            return None
-        except Exception as e:
-            log_event("ERROR", f"Error getting peer {name}: {e}", "error")
-            return None
+    def stop_server(self):
+        """Stop tracker server gracefully"""
+        self.is_running = False
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except:
+                pass
+        with self._lock:
+            for peer_id, peer_data in self.connected_peers.items():
+                try:
+                    peer_data['socket'].close()
+                except:
+                    pass
+            self.connected_peers.clear()
 
     def upload_file(self, file_path: str, peer_id: str) -> bool:
-        """Upload file and update peer piece info"""
+        """Upload file và tạo torrent entry"""
         try:
+            # Split file thành pieces
+            from app.torrent.piece import split_file
+            pieces = split_file(file_path, Config.PIECE_LENGTH)
+            if not pieces:
+                raise ValueError("Failed to split file into pieces")
+            
+            # Generate pieces hash (list of SHA1 hashes)
             from app.torrent.piece import generate_pieces
-            pieces = generate_pieces(file_path, Config.PIECE_LENGTH)
+            piece_hashes = generate_pieces(file_path, Config.PIECE_LENGTH)
+            if not piece_hashes:
+                raise ValueError("Failed to generate pieces")
             
             file_name = os.path.basename(file_path)
             file_length = os.path.getsize(file_path)
             
-            # Create torrent entry
-            info_hash = self._generate_info_hash(file_name, pieces, file_length)
+            # Nối pieces để tạo info hash
+            concatenated_pieces = b''.join(piece_hashes)  # Dùng piece_hashes
+            info_hash = generate_info_hash(
+                file_name, 
+                Config.PIECE_LENGTH,
+                concatenated_pieces,
+                file_length
+            )
+            if not info_hash:
+                raise ValueError("Failed to generate info hash")
             
+
+            
+            # Lưu torrent metadata
             torrent_data = {
                 'info_hash': info_hash,
                 'info': {
                     'name': file_name,
                     'piece_length': Config.PIECE_LENGTH,
                     'length': file_length,
-                    'pieces': pieces
+                    'pieces': base64.b64encode(concatenated_pieces).decode()
                 }
             }
-            self.db.add_torrent(torrent_data)
+            
+            # Lưu nội dung pieces vào peer database
+            piece_info = [
+                {
+                    'metainfo_id': info_hash,
+                    'index': i,
+                    'piece': pieces[i]  # Lưu nội dung thực
+                }
+                for i in range(len(pieces))
+            ]
+            self.db.update_peer_pieces(peer_id, piece_info)
 
-            # Create file entry
+            # Lưu torrent metadata
+            if not self.db.add_torrent(torrent_data):
+                raise ValueError("Failed to add torrent to database")
+
+            # Tạo file entry
             file_data = {
                 'file_name': file_name,
                 'metainfo_id': info_hash,
@@ -83,101 +116,58 @@ class Tracker:
                     'pieces': list(range(len(pieces)))
                 }]
             }
-            self.db.add_file(file_data)
-
-            # Update peer piece info
-            peer = self.db.get_peer(peer_id)
-            if peer:
-                for i, piece in enumerate(pieces):
-                    peer['piece_info'].append({
-                        'metainfo_id': info_hash,
-                        'index': i,
-                        'piece': piece
-                    })
-                self.db.update_peer_pieces(peer_id, peer['piece_info'])
-
+            if not self.db.add_file(file_data):
+                raise ValueError("Failed to add file to database")
+            
             return True
 
         except Exception as e:
             log_event("ERROR", f"Error uploading file: {e}", "error")
             return False
 
-    def get_peer_from_file(self, torrent_file: str) -> List[Dict]:
-        """Get peers related to torrent file"""
+    def get_peer_list(self, torrent_file: str) -> List[Dict]:
+        """Get danh sách peers có pieces của file"""
         try:
-            # Get info hash from torrent file
-            info_hash = self._get_info_hash(torrent_file)
+            # Lấy info hash từ torrent file
+            info_hash = get_info_hash(torrent_file)
             if not info_hash:
                 return []
                 
-            # Get file entry
+            # Lấy file entry từ database
             file_entry = self.db.get_file(info_hash)
             if not file_entry:
                 return []
 
-            # Get peer information
-            peers = []
-            for peer_info in file_entry['peers_info']:
-                peer = self.db.get_peer(peer_info['peer_id'])
-                if peer:
-                    peers.append({
-                        'peer_id': peer['peer_id'],
-                        'ip_address': peer['ip_address'],
-                        'port': peer['port'],
-                        'pieces': peer_info['pieces']
-                    })
-
-            return peers
+            # Trả về thông tin peers
+            return [
+                {
+                    'peer_id': peer_info['peer_id'],
+                    'ip': self.db.get_peer(peer_info['peer_id'])['ip_address'],
+                    'port': self.db.get_peer(peer_info['peer_id'])['port'],
+                    'pieces': peer_info['pieces']
+                }
+                for peer_info in file_entry['peers_info']
+            ]
 
         except Exception as e:
             log_event("ERROR", f"Error getting peers for file: {e}", "error")
             return []
 
-    def get_new_piece(self, torrent_file: str, peer_id: str) -> List[int]:
-        """Get pieces needed for peer to complete file"""
-        try:
-            # Get info hash
-            info_hash = self._get_info_hash(torrent_file)
-            if not info_hash:
-                return []
-
-            # Get torrent info
-            torrent = self.db.get_torrent(info_hash)
-            if not torrent:
-                return []
-
-            # Get pieces peer already has
-            peer = self.db.get_peer(peer_id)
-            if not peer:
-                return []
-
-            existing_pieces = set()
-            for piece_info in peer['piece_info']:
-                if piece_info['metainfo_id'] == info_hash:
-                    existing_pieces.add(piece_info['index'])
-
-            # Return missing pieces
-            total_pieces = len(torrent['info']['pieces'])
-            return [i for i in range(total_pieces) if i not in existing_pieces]
-
-        except Exception as e:
-            log_event("ERROR", f"Error getting new pieces: {e}", "error")
-            return []
-
     def run_peer_server(self, ip: str, port: int):
-        """Start peer server to handle peer connections"""
+        """Chạy tracker server để xử lý requests từ peers"""
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.settimeout(1.0)
             self.server_socket.bind((ip, port))
             self.server_socket.listen(5)
             self.is_running = True
             
             log_event("TRACKER", f"Tracker server running on {ip}:{port}", "info")
             
-            # Start cleanup thread
-            cleanup_thread = threading.Thread(target=self._cleanup_inactive_peers)
-            cleanup_thread.daemon = True
-            cleanup_thread.start()
+            # # Start cleanup thread
+            # cleanup_thread = threading.Thread(target=self._cleanup_inactive_peers)
+            # cleanup_thread.daemon = True  # Đảm bảo thread sẽ dừng khi chương trình chính dừng
+            # cleanup_thread.start()
             
             while self.is_running:
                 try:
@@ -188,119 +178,109 @@ class Tracker:
                     )
                     thread.daemon = True
                     thread.start()
+                except socket.timeout:
+                    continue
                 except Exception as e:
-                    log_event("ERROR", f"Error accepting connection: {e}", "error")
+                    if self.is_running:
+                        log_event("ERROR", f"Error accepting connection: {e}", "error")
                     
         except Exception as e:
             log_event("ERROR", f"Tracker server error: {e}", "error")
         finally:
-            if self.server_socket:
-                self.server_socket.close()
-
-    def _cleanup_inactive_peers(self):
-        """Remove inactive peers periodically"""
-        while self.is_running:
-            try:
-                self.db.remove_inactive_peers(Config.PEER_TIMEOUT)
-                time.sleep(Config.TRACKER_CLEANUP_INTERVAL)
-            except Exception as e:
-                log_event("ERROR", f"Error in cleanup: {e}", "error")
-
-    def _get_info_hash(self, torrent_file: str) -> Optional[str]:
-        """Get info hash from torrent file"""
-        try:
-            with open(torrent_file, 'rb') as f:
-                data = bencodepy.decode(f.read())
-                info = data[b'info']
-                return hashlib.sha1(bencodepy.encode(info)).hexdigest()
-        except Exception as e:
-            log_event("ERROR", f"Error getting info hash: {e}", "error")
-            return None
-
-    def _generate_info_hash(self, file_name: str, pieces: List[bytes], 
-                          file_length: int) -> str:
-        """Generate info hash for new torrent"""
-        info = {
-            'name': file_name,
-            'piece length': Config.PIECE_LENGTH,
-            'pieces': b''.join(pieces),
-            'length': file_length
-        }
-        return hashlib.sha1(bencodepy.encode(info)).hexdigest()
+            self.stop_server()
 
     def _handle_peer_connection(self, client_socket: socket.socket, addr: tuple):
-        """Handle peer connection and requests"""
+        """Xử lý kết nối và requests từ peer"""
+        peer_id = None
         try:
-            # Receive peer registration
-            data = client_socket.recv(1024).decode()
-            peer_info = json.loads(data)
+            # Set timeout cho socket
+            client_socket.settimeout(30.0)  # Tăng timeout lên 30s
             
-            peer_id = peer_info.get('peer_id')
-            if not peer_id:
-                raise ValueError("Missing peer_id")
-                
-            # Store connection
-            with self._lock:
-                self.connected_peers[peer_id] = {
-                    'socket': client_socket,
-                    'address': addr,
-                    'last_seen': time.time()
-                }
-            
-            # Handle peer requests
-            while True:
+            while True:  # Vòng lặp để xử lý nhiều requests
+                # Nhận request
                 data = client_socket.recv(1024).decode()
                 if not data:
+                    log_event("TRACKER", f"Connection closed by peer {addr}", "info")
                     break
-                    
+                
                 request = json.loads(data)
+                peer_id = request.get('peer_id')
+                
+                # Xử lý request
                 response = self._handle_peer_request(peer_id, request)
+                log_event("TRACKER", f"Processing {request.get('type')} request from peer {peer_id}", "info")
                 
-                # Send response
+                # Gửi response
                 client_socket.sendall(json.dumps(response).encode())
+                log_event("TRACKER", f"Sent response to peer {peer_id}", "info")
                 
-                # Update last seen
-                with self._lock:
-                    if peer_id in self.connected_peers:
-                        self.connected_peers[peer_id]['last_seen'] = time.time()
-                
+                # Nếu là request get_peers, đợi thêm để đảm bảo response được gửi
+                if request.get('type') == 'get_peers':
+                    time.sleep(0.1)
+
         except Exception as e:
             log_event("ERROR", f"Error handling peer {addr}: {e}", "error")
         finally:
-            # Cleanup on disconnect
-            with self._lock:
-                if peer_id in self.connected_peers:
-                    del self.connected_peers[peer_id]
-            client_socket.close()
+            try:
+                client_socket.close()
+                log_event("TRACKER", f"Closed connection with peer {addr}", "info")
+            except Exception as e:
+                log_event("ERROR", f"Error closing socket for peer {addr}: {e}", "error")
 
     def _handle_peer_request(self, peer_id: str, request: Dict) -> Dict:
-        """Handle different types of peer requests"""
+        """Xử lý các loại request từ peer"""
         try:
             request_type = request.get('type')
             
-            if request_type == 'get_peers':
-                # Get peers for torrent
-                torrent_hash = request.get('info_hash')
-                peers = self.get_peer_from_file(torrent_hash)
+            if request_type == 'handshake':
+                # Verify peer exists in database
+                peer = self.db.get_peer(peer_id)
+                if not peer:
+                    return {
+                        'status': 'error',
+                        'message': 'Peer not registered'
+                    }
+                
+                log_event("TRACKER", f"Handshake successful with peer {peer_id}", "info")
+                return {
+                    'status': 'success',
+                    'message': 'Handshake successful'
+                }
+                
+            elif request_type == 'get_peers':
+                info_hash = request.get('info_hash')
+                if not info_hash:
+                    return {'status': 'error', 'message': 'Missing info_hash'}
+                
+                log_event("TRACKER", f"Get peers request for {info_hash} from {peer_id}", "info")
+                file_entry = self.db.get_file(info_hash)
+                if not file_entry:
+                    return {'status': 'error', 'message': 'File not found'}
+                
+                # Return peer list excluding requesting peer
+                peers = []
+                for peer_info in file_entry['peers_info']:
+                    if peer_info['peer_id'] != peer_id:  # Don't include requesting peer
+                        peer = self.db.get_peer(peer_info['peer_id'])
+                        if peer:
+                            peers.append({
+                                'peer_id': peer['peer_id'],
+                                'ip_address': peer['ip_address'], 
+                                'port': peer['port'],
+                                'pieces': peer_info['pieces']
+                            })
+                
                 return {
                     'status': 'success',
                     'peers': peers
                 }
                 
-            elif request_type == 'get_pieces':
-                # Get needed pieces
-                torrent_hash = request.get('info_hash') 
-                pieces = self.get_new_piece(torrent_hash, peer_id)
-                return {
-                    'status': 'success',
-                    'pieces': pieces
-                }
-                
             elif request_type == 'update_pieces':
-                # Update peer's pieces
-                torrent_hash = request.get('info_hash')
+                # Cập nhật pieces của peer
+                info_hash = request.get('info_hash')
                 pieces = request.get('pieces', [])
-                self._update_peer_pieces(peer_id, torrent_hash, pieces)
+                
+                self.db.update_file_peers(info_hash, peer_id, pieces)
                 return {'status': 'success'}
                 
             else:
@@ -314,58 +294,3 @@ class Tracker:
                 'status': 'error',
                 'message': str(e)
             }
-
-    def _update_peer_pieces(self, peer_id: str, torrent_hash: str, pieces: List[int]):
-        """Update peer's piece information"""
-        try:
-            peer = self.db.get_peer(peer_id)
-            if not peer:
-                return
-                
-            # Update piece info
-            updated_pieces = []
-            for piece_info in peer['piece_info']:
-                if piece_info['metainfo_id'] != torrent_hash:
-                    updated_pieces.append(piece_info)
-                    
-            for piece_index in pieces:
-                updated_pieces.append({
-                    'metainfo_id': torrent_hash,
-                    'index': piece_index,
-                    'piece': None  # Actual piece data not stored in peer info
-                })
-                
-            self.db.update_peer_pieces(peer_id, updated_pieces)
-            
-            # Update file entry
-            file_entry = self.db.get_file(torrent_hash)
-            if file_entry:
-                updated = False
-                for peer_info in file_entry['peers_info']:
-                    if peer_info['peer_id'] == peer_id:
-                        peer_info['pieces'] = pieces
-                        updated = True
-                        break
-                        
-                if not updated:
-                    file_entry['peers_info'].append({
-                        'peer_id': peer_id,
-                        'pieces': pieces
-                    })
-                    
-                self.db.update_file(torrent_hash, file_entry)
-                
-        except Exception as e:
-            log_event("ERROR", f"Error updating peer pieces: {e}", "error")
-
-    def decode_torrent_file(self, torrent_file: str) -> str:
-        """Decode torrent file and return info hash"""
-        try:
-            # Read torrent file and extract info hash
-            with open(torrent_file, 'rb') as f:
-                data = f.read()
-                info_hash = hashlib.sha1(data).hexdigest()
-                return info_hash
-        except Exception as e:
-            log_event("ERROR", f"Error decoding torrent file: {e}", "error")
-            return "" 
