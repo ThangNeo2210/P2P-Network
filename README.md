@@ -8,14 +8,18 @@
 Tất cả các config được lưu trong file `app/config.py`
 
 ## MongoDB Setup
-Collections:
+Tải MongoDB Community Server và cài đặt.
+Config của MongoDB được lưu trong file `app/config.py`
+
+Có 3 Collections:
 - `peers`: Lưu thông tin peers và pieces họ đang có
 - `torrents`: Lưu metadata của các torrent files
 - `files`: Lưu thông tin file và peer distribution
 
 ## Tạo dữ liệu test
 
-1. Tạo các file input ngẫu nhiên:
+1. Tạo các file txt input ngẫu nhiên:
+--path: Đường dẫn đến thư mục lưu các file txt
 ```bash
 python -m app.tests.create_input_files --num_files 10 --path input_files
 ```
@@ -76,8 +80,11 @@ python main.py upload --input input/myfile.txt --peer-id peer1 --peer-port 6881 
 python main.py get --torrent output/torrents/myfile.txt.torrent
 ```
 
-## Ví dụ thiết lập nhiều peers:
+## Ví dụ đơn giản:
 ```bash
+# If no input, let create test data
+python -m app.tests.create_input_files --num_files 1 --path input
+
 # Start tracker
 python main.py tracker
 
@@ -86,12 +93,12 @@ python main.py start-peer --peer-id peer1 --peer-port 6881
 python main.py start-peer --peer-id peer2 --peer-port 6882
 
 # If there is not file torrent of it, let create it. It will be saved in output/torrents/
-python main.py create --input input/file.txt
+python main.py create --input input/random_file_1.txt
 # Upload từ peer1
-python main.py upload --input input/file.txt --peer-id peer1 --peer-port 6881
+python main.py upload --input input/random_file_1.txt --peer-id peer1 --peer-port 6881
 
 # Download từ peer2 
-python main.py download --torrent output/torrents/file.txt.torrent --output output/downloads/file.txt --peer-id peer2 --peer-port 6882
+python main.py download --torrent output/torrents/random_file_1.txt.torrent --output output/downloads/random_file_1.txt --peer-id peer2 --peer-port 6882
 ```
 
 
