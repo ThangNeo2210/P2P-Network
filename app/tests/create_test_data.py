@@ -92,16 +92,7 @@ def create_test_data(peer_id: str, input_dir: str, ip: str, port: int):
             {'$set': torrent_data},
             upsert=True
         )
-        
-        # 5. Lưu/update file entry
-        file_data = {
-            'file_name': file_name,
-            'metainfo_id': info_hash,
-            'peers_info': [{
-                'peer_id': peer_id,
-                'pieces': list(range(len(pieces)))
-            }]
-        }
+
         db.files.update_one(
             {'metainfo_id': info_hash},
             {

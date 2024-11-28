@@ -80,21 +80,21 @@ def start_tracker(host: str = Config.TRACKER_HOST,
         log_event("ERROR", f"Error starting tracker: {e}", "error")
         return None
 
-def upload_file(file_path: str, tracker: Tracker, peer_id: Optional[str] = None) -> bool:
-
+def upload_file(file_path: str, tracker: Tracker, peer_id: str, ip: str, port: int) -> bool:
     try:
-        # Lấy hoặc tạo peer ID
-        uploader_id = get_peer_id(peer_id)
-        
-        # Upload file lên tracker
-        if not tracker.upload_file(file_path, uploader_id):
-            raise Exception("Failed to upload file to tracker")
+        # Validate input
+        if not os.path.exists(file_path):
+            raise ValueError(f"Path not found: {file_path}")
             
-        log_event("SYSTEM", f"File uploaded successfully by peer {uploader_id}", "success")
+        # Upload file/folder lên tracker
+        if not tracker.upload_file(file_path, peer_id, ip, port):
+            raise Exception("Failed to upload to tracker")
+            
+        log_event("SYSTEM", f"Successfully uploaded by peer {peer_id}", "success")
         return True
         
     except Exception as e:
-        log_event("ERROR", f"Error uploading file: {e}", "error")
+        log_event("ERROR", f"Error uploading: {e}", "error")
         return False
 
 def download_torrent(torrent_file: str, output_path: str, peer_id: Optional[str] = None, host: str = Config.TRACKER_HOST, port: int = Config.DEFAULT_PORT) -> bool:
@@ -236,13 +236,18 @@ def main():
 
         elif args.command == 'upload':
             if not args.input:
-                raise ValueError("Input file path required for upload command")
+                raise ValueError("Input file/folder path required for upload command")
+            if not args.peer_id:
+                raise ValueError("Peer ID required for upload command")
             
             if not is_tracker_running(args.host, args.port):
                 raise ValueError("Tracker server is not running")
                 
             tracker = Tracker()
-            upload_file(args.input, tracker, args.peer_id)
+            if upload_file(args.input, tracker, args.peer_id, args.peer_host, args.peer_port):
+                print(f"Successfully uploaded {args.input}")
+            else:
+                print("Upload failed")
 
         elif args.command == 'download':
             if not args.torrent:

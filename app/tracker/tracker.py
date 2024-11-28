@@ -12,9 +12,9 @@ from app.utils.helpers import log_event
 from app.config import Config
 from app.utils.torrent_utils import (
     get_info_hash,
-    convert_pieces_for_storage,
     generate_info_hash
 )
+from app.torrent.piece import split_file
 
 class Tracker:
     """Tracker server để quản lý peers và files"""
@@ -50,79 +50,132 @@ class Tracker:
                     pass
             self.connected_peers.clear()
 
-    def upload_file(self, file_path: str, peer_id: str) -> bool:
-        """Upload file và tạo torrent entry"""
+    def upload_file(self, file_path: str, peer_id: str, ip: str, port: int) -> bool:
+        """Upload file hoặc folder và tạo torrent entries"""
         try:
-            # Split file thành pieces
-            from app.torrent.piece import split_file
-            pieces = split_file(file_path, Config.PIECE_LENGTH)
-            if not pieces:
-                raise ValueError("Failed to split file into pieces")
-            
-            # Generate pieces hash (list of SHA1 hashes)
-            from app.torrent.piece import generate_pieces
-            piece_hashes = generate_pieces(file_path, Config.PIECE_LENGTH)
-            if not piece_hashes:
-                raise ValueError("Failed to generate pieces")
-            
-            file_name = os.path.basename(file_path)
-            file_length = os.path.getsize(file_path)
-            
-            # Nối pieces để tạo info hash
-            concatenated_pieces = b''.join(piece_hashes)  # Dùng piece_hashes
-            info_hash = generate_info_hash(
-                file_name, 
-                Config.PIECE_LENGTH,
-                concatenated_pieces,
-                file_length
-            )
-            if not info_hash:
-                raise ValueError("Failed to generate info hash")
-            
+            # Kiểm tra path tồn tại
+            if not os.path.exists(file_path):
+                raise ValueError(f"Path not found: {file_path}")
 
-            
-            # Lưu torrent metadata
-            torrent_data = {
-                'info_hash': info_hash,
-                'info': {
-                    'name': file_name,
-                    'piece_length': Config.PIECE_LENGTH,
-                    'length': file_length,
-                    'pieces': base64.b64encode(concatenated_pieces).decode()
-                }
+            # Tạo/update peer entry trước
+            peer_data = {
+                'peer_id': peer_id,
+                'ip_address': ip,
+                'port': port,
+                'piece_info': []  # Thêm piece_info rỗng cho peer mới
             }
             
-            # Lưu nội dung pieces vào peer database
-            piece_info = [
-                {
+            # Kiểm tra peer tồn tại
+            if not self.db.get_peer(peer_id):
+                self.db._insert_one('peers', peer_data)
+            else:
+                self.db._update_one('peers', {'peer_id': peer_id}, {'$set': peer_data})
+
+            files_to_process = []
+            if os.path.isfile(file_path):
+                files_to_process.append(file_path)
+            elif os.path.isdir(file_path):
+                files_to_process.extend([
+                    os.path.join(file_path, f) 
+                    for f in os.listdir(file_path)
+                    if os.path.isfile(os.path.join(file_path, f))
+                ])
+
+            if not files_to_process:
+                raise ValueError("No files to process")
+
+            # Process từng file
+            for file_path in files_to_process:
+                # 1. Split file thành pieces
+                pieces = split_file(file_path, Config.PIECE_LENGTH)
+                if not pieces:
+                    log_event("ERROR", f"Failed to split file {file_path}", "error")
+                    continue
+
+                file_name = os.path.basename(file_path)
+                file_length = os.path.getsize(file_path)
+                log_event("TRACKER", f"Processing file: {file_name} ({file_length} bytes)", "info")
+
+                # 2. Generate pieces hash
+                piece_hashes = [hashlib.sha1(p).digest() for p in pieces]
+                concatenated_hashes = b''.join(piece_hashes)
+                encoded_hashes = base64.b64encode(concatenated_hashes)
+
+                # 3. Generate info hash
+                info_hash = generate_info_hash(
+                    file_name,
+                    Config.PIECE_LENGTH,
+                    encoded_hashes,
+                    file_length
+                )
+                if not info_hash:
+                    log_event("ERROR", f"Failed to generate info hash for {file_name}", "error")
+                    continue
+
+                # 4. Lưu torrent entry
+                torrent_data = {
+                    'info_hash': info_hash,
+                    'info': {
+                        'name': file_name,
+                        'piece_length': Config.PIECE_LENGTH,
+                        'length': file_length,
+                        'pieces': encoded_hashes.decode()
+                    }
+                }
+                if not self.db.get_torrent(info_hash):
+                    self.db._insert_one('torrents', torrent_data)
+                else:
+                    self.db._update_one('torrents', {'info_hash': info_hash}, {'$set': torrent_data})
+
+                # 5. Lưu/update file entry
+                file_data = {
+                    'file_name': file_name,
                     'metainfo_id': info_hash,
-                    'index': i,
-                    'piece': pieces[i]  # Lưu nội dung thực
+                    'peers_info': [{
+                        'peer_id': peer_id,
+                        'pieces': list(range(len(pieces)))
+                    }]
                 }
-                for i in range(len(pieces))
-            ]
-            self.db.update_peer_pieces(peer_id, piece_info)
+                
+                if not self.db.get_file(info_hash):
+                    self.db._insert_one('files', file_data)
+                else:
+                    self.db._update_one(
+                        'files',
+                        {'metainfo_id': info_hash},
+                        {
+                            '$addToSet': {
+                                'peers_info': {
+                                    'peer_id': peer_id,
+                                    'pieces': list(range(len(pieces)))
+                                }
+                            }
+                        }
+                    )
 
-            # Lưu torrent metadata
-            if not self.db.add_torrent(torrent_data):
-                raise ValueError("Failed to add torrent to database")
+                # 6. Lưu nội dung pieces vào peer
+                piece_info = [
+                    {
+                        'metainfo_id': info_hash,
+                        'index': i,
+                        'piece': pieces[i]
+                    }
+                    for i in range(len(pieces))
+                ]
 
-            # Tạo file entry
-            file_data = {
-                'file_name': file_name,
-                'metainfo_id': info_hash,
-                'peers_info': [{
-                    'peer_id': peer_id,
-                    'pieces': list(range(len(pieces)))
-                }]
-            }
-            if not self.db.add_file(file_data):
-                raise ValueError("Failed to add file to database")
-            
+                # Update peer's piece info
+                self.db._update_one(
+                    'peers',
+                    {'peer_id': peer_id},
+                    {'$push': {'piece_info': {'$each': piece_info}}}
+                )
+
+                log_event("TRACKER", f"Successfully processed file: {file_name}", "success")
+
             return True
 
         except Exception as e:
-            log_event("ERROR", f"Error uploading file: {e}", "error")
+            log_event("ERROR", f"Error uploading file(s): {e}", "error")
             return False
 
     def get_peer_list(self, torrent_file: str) -> List[Dict]:
