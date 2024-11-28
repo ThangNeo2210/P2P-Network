@@ -16,17 +16,7 @@ class TorrentHandler:
     """Handler for torrent file operations"""
     
     def create_torrent_file(self, file_path: str, output_file: str) -> Optional[str]:
-        """
-        Tạo torrent file từ file gốc.
-        
-        Args:
-            file_path: Đường dẫn đến file gốc
-            output_file: Đường dẫn để lưu file torrent
-            
-        Returns:
-            str: Info hash của torrent nếu thành công
-            None: Nếu thất bại
-        """
+
         try:
             if not os.path.exists(file_path):
                 raise ValueError(f"File not found: {file_path}")
@@ -84,16 +74,7 @@ class TorrentHandler:
             return None
 
     def read_torrent_file(self, torrent_file: str) -> Optional[Dict]:
-        """
-        Đọc và parse torrent file.
-        
-        Args:
-            torrent_file: Đường dẫn đến file torrent
-            
-        Returns:
-            Dict: Thông tin torrent nếu thành công
-            None: Nếu thất bại
-        """
+ 
         try:
             if not os.path.exists(torrent_file):
                 raise ValueError(f"Torrent file not found: {torrent_file}")
@@ -123,16 +104,7 @@ class TorrentHandler:
             return None
 
     def verify_torrent_file(self, torrent_file: str, original_file: str) -> bool:
-        """
-        Verify torrent file matches original file.
-        
-        Args:
-            torrent_file: Đường dẫn đến file torrent
-            original_file: Đường dẫn đến file gốc
-            
-        Returns:
-            bool: True nếu verify thành công
-        """
+
         try:
             if not os.path.exists(torrent_file) or not os.path.exists(original_file):
                 return False
@@ -165,15 +137,7 @@ class TorrentHandler:
             return False
 
     def get_torrent_info(self, torrent_file: str) -> Optional[Dict]:
-        """
-        Get basic torrent information.
-        
-        Args:
-            torrent_file: Đường dẫn đến file torrent
-            
-        Returns:
-            Dict: Thông tin cơ bản của torrent
-        """
+
         try:
             torrent_data = self.read_torrent_file(torrent_file)
             if not torrent_data:

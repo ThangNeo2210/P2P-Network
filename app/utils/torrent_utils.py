@@ -29,19 +29,22 @@ def convert_pieces_from_storage(pieces_base64: str) -> List[bytes]:
 def get_info_hash(torrent_file: str) -> Optional[str]:
     """
     Get info hash from torrent file.
-    
-    Args:
-        torrent_file: Path to the torrent file
-        
-    Returns:
-        str: Info hash if successful
-        None: If operation fails
     """
     try:
         with open(torrent_file, 'rb') as f:
-            data = bencodepy.decode(f.read())
+            # Đọc file thành bytes trước khi decode
+            torrent_bytes = f.read()
+            if not torrent_bytes:
+                raise ValueError("Empty torrent file")
+                
+            # Decode torrent data
+            data = bencodepy.decode(torrent_bytes)
+            if not data or b'info' not in data:
+                raise ValueError("Invalid torrent file structure")
+                
             info = data[b'info']
             return hashlib.sha1(bencodepy.encode(info)).hexdigest()
+            
     except Exception as e:
         log_event("ERROR", f"Error getting info hash: {e}", "error")
         return None

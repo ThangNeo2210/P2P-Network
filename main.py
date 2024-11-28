@@ -11,6 +11,7 @@ import threading
 import uuid
 import socket
 import time
+import json
 
 def get_peer_id(input_id: Optional[str] = None) -> str:
     if input_id:
@@ -127,41 +128,6 @@ def is_tracker_running(host: str = Config.TRACKER_HOST, port: int = Config.TRACK
     except:
         return False
 
-def setup_parser():
-    """Thiết lập argument parser"""
-    parser = argparse.ArgumentParser(description="BitTorrent Client")
-    
-    # Main command
-    parser.add_argument('command', 
-                       choices=['create', 'tracker', 'upload', 'download', 'get', 'start-peer'],
-                       help='Command to execute (create: create torrent, tracker: run tracker server, '
-                            'upload: upload file, download: download file, get: get peer list, '
-                            'start-peer: start peer server)')
-
-
-    # Tracker options
-    tracker_group = parser.add_argument_group('Tracker options')
-    tracker_group.add_argument('--host', default=Config.TRACKER_HOST,
-                           help='Tracker host address')
-    tracker_group.add_argument('--port', type=int, default=Config.TRACKER_PORT,
-                           help='Tracker port number')
-
-    # File options
-    file_group = parser.add_argument_group('File options')
-    file_group.add_argument('--input', 
-                           help='Input file or folder path (for create command)')
-    file_group.add_argument('--output', help='Output file path')
-    file_group.add_argument('--torrent', help='Torrent file path')
-
-    # Peer options
-    peer_group = parser.add_argument_group('Peer options')
-    peer_group.add_argument('--peer-id', help='Unique peer ID (optional)')
-    peer_group.add_argument('--peer-host', default=Config.TRACKER_HOST,
-                         help='Peer host address')
-    peer_group.add_argument('--peer-port', type=int, default=Config.DEFAULT_PORT,
-                         help='Peer port number')
-
-    return parser
 
 def start_peer_server(peer_id: str, host: str, port: int):
     """Khởi động peer server"""
@@ -207,6 +173,85 @@ def get_peers_for_torrent(torrent_file: str) -> bool:
     except Exception as e:
         log_event("ERROR", f"Error getting peers: {e}", "error")
         return False
+
+def setup_parser():
+    """Thiết lập argument parser"""
+    parser = argparse.ArgumentParser(description="BitTorrent Client")
+    
+    # Main command
+    parser.add_argument('command', 
+                       choices=['create', 'tracker', 'upload', 'download', 'get', 'start-peer'],
+                       help='Command to execute (create: create torrent, tracker: run tracker server, '
+                            'upload: upload file, download: download file, get: get peer list, '
+                            'start-peer: start peer server)')
+
+
+    # Tracker options
+    tracker_group = parser.add_argument_group('Tracker options')
+    tracker_group.add_argument('--host', default=Config.TRACKER_HOST,
+                           help='Tracker host address')
+    tracker_group.add_argument('--port', type=int, default=Config.TRACKER_PORT,
+                           help='Tracker port number')
+
+    # File options
+    file_group = parser.add_argument_group('File options')
+    file_group.add_argument('--input', 
+                           help='Input file or folder path (for create command)')
+    file_group.add_argument('--output', help='Output file path')
+    file_group.add_argument('--torrent', help='Torrent file path')
+
+    # Peer options
+    peer_group = parser.add_argument_group('Peer options')
+    peer_group.add_argument('--peer-id', help='Unique peer ID (optional)')
+    peer_group.add_argument('--peer-host', default=Config.TRACKER_HOST,
+                         help='Peer host address')
+    peer_group.add_argument('--peer-port', type=int, default=Config.DEFAULT_PORT,
+                         help='Peer port number')
+    peer_group.add_argument('--config', help='Path to peer config JSON file')
+
+    return parser
+
+def start_peer_servers(config_file: str):
+    """
+    Khởi động nhiều peer servers từ config file.
+    
+    Args:
+        config_file: Đường dẫn đến file config JSON
+    """
+    try:
+        # Đọc config file
+        if not os.path.exists(config_file):
+            raise ValueError(f"Config file not found: {config_file}")
+            
+        with open(config_file, 'r') as f:
+            peer_configs = json.load(f)
+            
+        # Khởi động peer servers
+        threads = []
+        for peer_id, config in peer_configs.items():
+            ip = config.get('ip', Config.TRACKER_HOST)
+            port = config.get('port', Config.DEFAULT_PORT)
+            
+            thread = threading.Thread(
+                target=start_peer_server,
+                args=(peer_id, ip, port),
+                name=f"PeerServer-{peer_id}"
+            )
+            thread.daemon = True
+            threads.append(thread)
+            thread.start()
+            
+            log_event("SYSTEM", f"Started peer server {peer_id} on {ip}:{port}", "success")
+            
+        # Đợi tất cả threads
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nStopping all peer servers...")
+            
+    except Exception as e:
+        log_event("ERROR", f"Error starting peer servers: {e}", "error")
 
 def main():
     """Main entry point"""
@@ -270,9 +315,9 @@ def main():
             get_peers_for_torrent(args.torrent)
 
         elif args.command == 'start-peer':
-            if not args.peer_id:
-                raise ValueError("Peer ID is required to start peer server")
-            start_peer_server(args.peer_id, args.peer_host, args.peer_port)
+            if not args.config:
+                raise ValueError("Config file path required for start-peer command")
+            start_peer_servers(args.config)
 
     except ValueError as e:
         print(f"Error: {str(e)}")

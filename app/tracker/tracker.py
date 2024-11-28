@@ -261,8 +261,8 @@ class Tracker:
                 
                 # Xử lý request
                 response = self._handle_peer_request(peer_id, request)
-                log_event("TRACKER", f"Processing {request.get('type')} request from peer {peer_id}", "info")
-                
+                # log_event("TRACKER", f"Processing {request.get('type')} request from peer {peer_id}", "info")
+                # log_event("TRACKER", f"Response: {response}", "info")
                 # Gửi response
                 client_socket.sendall(json.dumps(response).encode())
                 log_event("TRACKER", f"Sent response to peer {peer_id}", "info")
@@ -304,7 +304,7 @@ class Tracker:
                 info_hash = request.get('info_hash')
                 if not info_hash:
                     return {'status': 'error', 'message': 'Missing info_hash'}
-                
+                 
                 log_event("TRACKER", f"Get peers request for {info_hash} from {peer_id}", "info")
                 file_entry = self.db.get_file(info_hash)
                 if not file_entry:

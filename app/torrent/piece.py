@@ -18,9 +18,9 @@ def generate_pieces(file_path: str, piece_length: int) -> List[bytes]:
 
 def verify_piece(piece_data: bytes, piece_index: int, torrent_data: Dict):
     try:
-        log_event("PEER", f"Piece length in torrent: {torrent_data['info']['piece_length']}", "info")
-        log_event("PEER", f"Actual piece data length: {len(piece_data)}", "info")
-        log_event("PEER", f"First 20 bytes of piece data: {piece_data[:20].hex()}", "info")
+        # log_event("PEER", f"Piece length in torrent: {torrent_data['info']['piece_length']}", "info")
+        # log_event("PEER", f"Actual piece data length: {len(piece_data)}", "info")
+        # log_event("PEER", f"First 20 bytes of piece data: {piece_data[:20].hex()}", "info")
         
         # 1. Lấy base64 string từ torrent data và decode về bytes
         pieces_base64 = torrent_data['info']['pieces']  # base64 string
@@ -28,11 +28,11 @@ def verify_piece(piece_data: bytes, piece_index: int, torrent_data: Dict):
         
         # 2. Lấy hash của piece cần verify
         piece_hash = all_pieces[piece_index * 20:(piece_index + 1) * 20]
-        log_event("PEER", f"Got hash for piece {piece_index}: {piece_hash.hex()}", "info")
+        # log_event("PEER", f"Got hash for piece {piece_index}: {piece_hash.hex()}", "info")
         
         # 3. Tính hash của piece data nhận được
         actual_hash = hashlib.sha1(piece_data).digest()
-        log_event("PEER", f"Calculated hash for piece {piece_index}: {actual_hash.hex()}", "info")
+        # log_event("PEER", f"Calculated hash for piece {piece_index}: {actual_hash.hex()}", "info")
         
         return piece_hash == actual_hash
         
@@ -41,16 +41,7 @@ def verify_piece(piece_data: bytes, piece_index: int, torrent_data: Dict):
         return False
 
 def combine_pieces(pieces: List[bytes], output_file: str) -> bool:
-    """
-    Gộp các pieces thành file hoàn chỉnh.
-    
-    Args:
-        pieces: Danh sách các pieces theo thứ tự
-        output_file: Đường dẫn file output
-        
-    Returns:
-        bool: True nếu gộp thành công
-    """
+
     try:
         if not pieces:
             raise ValueError("No pieces to combine")

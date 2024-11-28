@@ -71,10 +71,15 @@ class PeerNode:
         signal.signal(signal.SIGINT, self._signal_handler)
 
         self.peer_assignments = {}  # Track peer -> thread assignments
+        
         self._assignment_lock = threading.Lock()  # Lock for peer assignments
         self._connect_lock = threading.Lock()  # Lock cho việc connect to peer
-
+        self._piece_lock = threading.Lock()     # Lock cho piece state
+        self._peer_lock = threading.Lock()      # Lock cho peer list
+        self._download_lock = threading.Lock()   # Lock cho download state
+        
         self.unavailable_pieces = set()  # Pieces không có peer nào có
+        self.download_history = defaultdict(set)  # Track pieces downloaded by each peer
 
     def _register_peer(self):
         """Register peer trong database"""
@@ -111,10 +116,12 @@ class PeerNode:
         try:
             self.is_running = True
             
-            # Khởi tạo trạng thái download
-            with self._lock:
+            # Clear states with appropriate locks
+            with self._piece_lock:
                 self.completed_pieces.clear()
                 self.failed_pieces.clear()
+            
+            with self._download_lock:
                 self.active_downloads.clear()
             
             log_event("PEER", f"Starting download for {torrent_data['info_hash']}", "start")
@@ -149,17 +156,16 @@ class PeerNode:
                 completed_count = 0
                 failed_pieces_snapshot = {}
                 
-                with self._lock:
+                # Get completion status
+                with self._piece_lock:
                     completed_count = len(self.completed_pieces)
                     failed_pieces_snapshot = self.failed_pieces.copy()
                 
                 if completed_count == len(needed_pieces):
-                    with self._lock:
-                        # Update peer's pieces
+                    # Update database
+                    with self._piece_lock:
                         self._update_completed_pieces(torrent_data['info_hash'])
-                        # Update file info
                         self._update_file_info(torrent_data['info_hash'], self.completed_pieces)
-                        log_event("PEER", f"Download completed for {torrent_data['info_hash']}", "success")
                     
                     self.is_running = False
                     self._close_all_connections()
@@ -176,7 +182,7 @@ class PeerNode:
                 time.sleep(0.1)
             
             # Kiểm tra lần cuối
-            with self._lock:
+            with self._piece_lock:
                 return len(self.completed_pieces) == len(needed_pieces)
             
         except Exception as e:
@@ -199,13 +205,14 @@ class PeerNode:
     def _queue_piece_requests(self, needed_pieces: List[int], peer_list: List[Dict]):
         """Queue piece requests với peer selection thông minh"""
         try:
-            # Group pieces theo peer để mỗi peer được xử lý bởi một thread
-            pieces_by_peer = defaultdict(list)
+            # Calculate peer scores
             peer_scores = self._calculate_peer_scores(peer_list)
-            
             log_event("PEER", f"Queueing {len(needed_pieces)} pieces", "info")
 
-            # 1. Phân pieces cho các peers dựa trên score
+            # Tạo dict để track số pieces đã assign cho mỗi peer
+            peer_piece_counts = defaultdict(int)
+
+            # Xử lý từng piece
             for piece_index in needed_pieces:
                 # Tìm peers có piece này
                 available_peers = [
@@ -216,32 +223,44 @@ class PeerNode:
                 if not available_peers:
                     log_event("PEER", f"No peers available for piece {piece_index}", "info")
                     continue
-                    
-                # Sắp xếp peers theo score và chọn peer tốt nhất
-                available_peers.sort(key=lambda p: peer_scores[p['peer_id']], reverse=True)
-                best_peer = available_peers[0]
-                
-                # Thêm piece vào nhóm của peer được chọn
-                pieces_by_peer[best_peer['peer_id']].append(piece_index)
 
-            # 2. Queue các pieces theo nhóm peer
-            for peer_id, pieces in pieces_by_peer.items():
-                # Tính priority cho cả nhóm pieces của peer này
-                priority = len(pieces)  # Peer có nhiều pieces sẽ có priority cao hơn
+                # Tính điểm cho mỗi peer dựa trên:
+                # 1. Peer score (tốc độ, độ tin cậy)
+                # 2. Số pieces đã được assign (-0.1 điểm cho mỗi piece)
+                peer_rankings = [
+                    (
+                        peer,
+                        peer_scores[peer['peer_id']] - (0.1 * peer_piece_counts[peer['peer_id']])
+                    )
+                    for peer in available_peers
+                ]
+
+                # Chọn peer có điểm cao nhất
+                best_peer = max(peer_rankings, key=lambda x: x[1])[0]
                 
-                # Queue tất cả pieces của peer này cùng một lúc
-                for piece_index in pieces:
-                    self.download_queue.put((
-                        priority,
-                        PieceRequest(
-                            piece_index=piece_index,
-                            peer_id=peer_id,
-                            status='pending'
-                        )
-                    ))
+                # Update piece count cho peer được chọn
+                peer_piece_counts[best_peer['peer_id']] += 1
+
+                # Queue piece request
+                self.download_queue.put((
+                    1,  # Priority
+                    PieceRequest(
+                        piece_index=piece_index,
+                        peer_id=best_peer['peer_id'],
+                        status='pending'
+                    )
+                ))
+
+                log_event("PEER", 
+                    f"Assigned piece {piece_index} to peer {best_peer['peer_id']} "
+                    f"(pieces assigned: {peer_piece_counts[best_peer['peer_id']]})", 
+                    "info"
+                )
+
+            # Log phân bổ pieces
+            for peer_id, count in peer_piece_counts.items():
+                log_event("PEER", f"Peer {peer_id} assigned {count} pieces", "info")
                 
-                log_event("PEER", f"Queued {len(pieces)} pieces from peer {peer_id}", "info")
-            
         except Exception as e:
             log_event("ERROR", f"Error queueing piece requests: {e}", "error")
 
@@ -317,12 +336,12 @@ class PeerNode:
                 
                 #log_event("PEER", f"Decoded piece data: {encoded_data}", "info")
                 piece_data = base64.b64decode(encoded_data)
-                log_event("PEER", f"Received piece {piece_index} (size: {len(piece_data)} bytes)", "info")
+                
 
                 if verify_piece(piece_data, piece_index, torrent_data):
                     # Gửi ACK
                     sock.sendall(b'ACK')
-                    log_event("PEER", f"Successfully verified and ACKed piece {piece_index}", "info")
+                    #log_event("PEER", f"Successfully verified and ACKed piece {piece_index}", "info")
                     log_event("PEER", f"Downloaded piece {piece_index} (size: {len(piece_data)} bytes) successfully from peer {peer_id}", "success")
                     return piece_data
                     
@@ -423,62 +442,64 @@ class PeerNode:
 
     def request_peers_from_tracker(self, torrent_file: str) -> List[Dict]:
         """
-        Gửi HTTP request đến tracker để lấy danh sách peers.
-        
-        Args:
-            torrent_file: Đường dẫn file torrent
-        
-        Returns:
-            List[Dict]: Danh sách peers có file
+        Gửi request đến tracker để lấy danh sách peers.
         """
         try:
-            # Kt nối đến tracker
+            # Kết nối đến tracker
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(Config.SOCKET_TIMEOUT)
             sock.connect((Config.TRACKER_HOST, Config.TRACKER_PORT))
             
-            # 1. Thiết lập handshake trước
+            # 1. Handshake
             handshake = {
                 'peer_id': self.peer_id,
                 'type': 'handshake'
             }
             sock.sendall(json.dumps(handshake).encode())
             
-            # Đợi response của handshake
             handshake_response = json.loads(sock.recv(1024).decode())
             if handshake_response.get('status') != 'success':
                 log_event("ERROR", f"Handshake failed: {handshake_response.get('message')}", "error")
                 return []
+            
             log_event("PEER", f"Handshake successful with tracker", "info")
             
-            # 2. Sau khi handshake thành công, bắt đầu vòng lặp request get_peers
-            while True:  
+            # 2. Get peers request
+            request = {
+                'type': 'get_peers',
+                'info_hash': get_info_hash(torrent_file)
+            }
+            sock.sendall(json.dumps(request).encode())
+            log_event("PEER", f"Sent get_peers request to tracker", "info")
+
+            # Nhận response với buffer size lớn hơn
+            buffer = []
+            while True:
                 try:
-                    request = {
-                        'type': 'get_peers',
-                        'info_hash': get_info_hash(torrent_file)
-                    }
-                    sock.sendall(json.dumps(request).encode())
-                    log_event("PEER", f"Sent get_peers request to tracker", "info")
-                    # Đợi response của get_peers
-                    response = json.loads(sock.recv(1024).decode())
-                    log_event("PEER", f"Received response from tracker: {response}", "info")
-                    
-                    if response.get('status') == 'success':
-                        peers = response.get('peers', [])
-                        log_event("PEER", f"Got {len(peers)} peers from tracker", "info")
-                        
-                        return peers
-                    else:
-                        log_event("ERROR", f"Get peers failed: {response.get('message')}", "error")
-                        continue  # Thử lại get_peers
-                    
-                except Exception as e:
-                    log_event("ERROR", f"Error in request cycle: {e}", "error")
-                    return []
+                    chunk = sock.recv(8192)  # Tăng buffer size
+                    if not chunk:
+                        break
+                    buffer.append(chunk)
+                    if chunk.endswith(b'"}'):  # Kiểm tra kết thúc JSON
+                        break
+                except socket.timeout:
+                    break
+
+            data = b''.join(buffer)
             
-            return []  # Trong trường hợp vòng lặp bị break
-                
+            try:
+                response = json.loads(data.decode())
+                if response.get('status') == 'success':
+                    peers = response.get('peers', [])
+                    log_event("PEER", f"Got {len(peers)} peers from tracker", "info")
+                    return peers
+                else:
+                    log_event("ERROR", f"Get peers failed: {response.get('message')}", "error")
+                    return []
+            except json.JSONDecodeError as e:
+                log_event("ERROR", f"Error decoding response: {e}", "error")
+                return []
+
         except Exception as e:
             log_event("ERROR", f"Error requesting peers from tracker: {e}", "error")
             return []
@@ -486,37 +507,39 @@ class PeerNode:
             sock.close()
 
     def _manage_peer_connections(self, peer_list: List[Dict]):
+        """Quản lý kết nối với các peers"""
         while self.is_running:
             try:
-                # 1. Xóa kết nối chết
-                dead_peers = []
-                with self._lock:
-                    for peer_id in list(self.connected_peers.keys()):
-                        if not self._is_connection_alive(peer_id):
-                            dead_peers.append(peer_id)
-                            
-                # Xóa kết nối ngoài lock
-                for peer_id in dead_peers:
-                    self._close_peer_connection(peer_id)
+                # 1. Kiểm tra và xóa dead peers
+                # with self._peer_lock:  # Lock cho việc truy cập peer list
+                #     dead_peers = [
+                #         peer_id for peer_id in self.connected_peers.keys()
+                #         if not self._is_connection_alive(peer_id)
+                #     ]
+                
+                # Xóa kết nối dead peers (không cần lock vì _close_peer_connection đã có lock)
+                # for peer_id in dead_peers:
+                #     self._close_peer_connection(peer_id)
+                #     log_event("PEER", f"Removed dead peer {peer_id}", "info")
+
+                # 2. Tìm và kết nối peers mới nếu cần
+                with self._peer_lock:
+                    current_peers = set(self.connected_peers.keys())
+                    needed_peers = self.max_connections - len(current_peers)
                     
-                # 2. Tìm peer mới
-                need_connection = False
-                available_peers = []
-                with self._lock:
-                    if len(self.connected_peers) < self.max_connections:
+                    if needed_peers > 0:
+                        # Lọc peers chưa kết nối
                         available_peers = [
-                            peer for peer in peer_list
-                            if peer['peer_id'] not in self.connected_peers
+                            peer for peer in peer_list 
+                            if peer['peer_id'] not in current_peers
                         ]
-                        need_connection = True
                         
-                # Kết nối ngoài lock
-                if need_connection:
-                    for peer in available_peers:
-                        if self._connect_to_peer(peer):
-                            log_event("PEER", f"Connected to peer {peer['peer_id']}", "info")
-                            break
-                            
+                        # Thử kết nối với từng peer mới
+                        for peer in available_peers[:needed_peers]:
+                            if self._connect_to_peer(peer):
+                                log_event("PEER", f"Connected to new peer {peer['peer_id']}", "info")
+
+                # Đợi 1 giây trước khi check lại
                 time.sleep(1)
                     
             except Exception as e:
@@ -527,12 +550,13 @@ class PeerNode:
         current_peer_id = None
         log_event("PEER", f"{thread_name} started", "start")
 
+        
         try:
             while self.is_running:
                 try:
                     # Lấy request từ queue
                     try:
-                        priority, request = self.download_queue.get(timeout=1)
+                        priority, request = self.download_queue.get(timeout=0.5)
                     except queue.Empty:
                         continue
 
@@ -559,17 +583,13 @@ class PeerNode:
                         elif current_peer_id != peer_id:
                             self.download_queue.put((priority, request))
                             continue
-
+                    
                     # Thử kết nối lại nếu mất kết nối
-                    reconnect_timeout = 20
+                    reconnect_timeout = 10
                     reconnect_start = time.time()
                     connected = False
 
                     while time.time() - reconnect_start < reconnect_timeout:
-                        if self._is_connection_alive(peer_id):
-                            connected = True
-                            break
-                        
                         log_event("PEER", f"Attempting to reconnect to {peer_id}", "info")
                         peer_info = next((p for p in peer_list if p['peer_id'] == peer_id), None)
                         if peer_info and self._connect_to_peer(peer_info):
@@ -581,15 +601,15 @@ class PeerNode:
                     if not connected:
                         log_event("PEER", f"Failed to reconnect to {peer_id} after {reconnect_timeout}s", "error")
                         
-                        # Cleanup và reassign pieces
+                        # Cleanup connection
                         self._close_peer_connection(peer_id)
                         
-                        # Cập nhật peer list và reassign pieces
-                        with self._lock:
+                        # Update peer list
+                        with self._peer_lock:
                             peer_list = [p for p in peer_list if p['peer_id'] != peer_id]
                             self._reassign_pieces(peer_id, peer_list)
 
-                        # Reset thread state
+                        # Reset thread assignment
                         with self._assignment_lock:
                             if current_peer_id in self.peer_assignments:
                                 del self.peer_assignments[current_peer_id]
@@ -599,25 +619,30 @@ class PeerNode:
                         continue
 
                     # Download piece
-                    log_event("PEER", f"Downloading piece {piece_index} from {peer_id}", "info")
+                    #log_event("PEER", f"Downloading piece {piece_index} from {peer_id}", "info")
                     piece_data = self._download_piece(piece_index, peer_id, torrent_data)
-                    log_event("PEER", f"AFTER DOWNLOADING", "info")
 
                     if piece_data:
-                        # Update peer score trước
-                        self._update_peer_score(peer_id, True)
+                        # Update peer score
+                        with self._peer_lock:
+                            self._update_peer_score(peer_id, True)
+                            self.download_history[peer_id].add(piece_index)  # Track piece download
                         
-                        # Sau đó mới update trạng thái download
-                        with self._lock:
+                        # Update piece state
+                        with self._piece_lock:
                             self.completed_pieces.add(piece_index)
+                        
+                        # Update download state
+                        with self._download_lock:
                             self.active_downloads[piece_index] = piece_data
                             log_event("PEER", f"Successfully downloaded piece {piece_index}", "success")
                     else:
-                        # Update peer score trước
-                        self._update_peer_score(peer_id, False)
+                        # Update peer score
+                        with self._peer_lock:
+                            self._update_peer_score(peer_id, False)
                         
-                        # Sau đó mới update trạng thái failed
-                        with self._lock:
+                        # Update failed pieces
+                        with self._piece_lock:
                             self.failed_pieces[piece_index] += 1
                             if self.failed_pieces[piece_index] < self.retry_count:
                                 self._requeue_request(request)
@@ -717,7 +742,6 @@ class PeerNode:
             log_event("ERROR", f"Error handling request: {e}", "error")
 
     def _handle_peer_connection(self, client_socket: socket.socket):
-        """Xử lý kết nối từ peer khác."""
         try:
             while True:
                 data = client_socket.recv(1024).decode()
@@ -817,13 +841,13 @@ class PeerNode:
             if not peers:
                 raise ValueError("No peers available")
             
-            log_event("PEER", f"Remove self peer {self.peer_id} from peers list", "info")
+            
             for peer in peers:
                 if peer['peer_id'] == self.peer_id:
                     peers.remove(peer)
 
             log_event("PEER", f"Found {len(peers)} peers with file", "info")
-            log_event("PEER", f"Peers: {peers}", "info")
+            
 
             # 3. Tính toán pieces cần download
             total_pieces = len(base64.b64decode(torrent_data['info']['pieces'])) // 20
@@ -833,6 +857,9 @@ class PeerNode:
             # 4. Bắt đầu download
             if not self.start_download(torrent_data, peers, needed_pieces):
                 raise ValueError("Failed to download pieces")
+            
+            # In thống kê download
+            self.print_download_stats(peers)
             
             # 5. Gộp pieces thành file hoàn chỉnh
             from app.torrent.piece import combine_pieces
@@ -941,3 +968,43 @@ class PeerNode:
                     
         except Exception as e:
             log_event("ERROR", f"Error reassigning pieces: {e}", "error")
+
+    def print_download_stats(self, peer_list: List[Dict]):
+        """In thống kê sau khi download xong"""
+        try:
+            # Tính số pieces từ mỗi peer
+            peer_pieces = defaultdict(int)
+            for piece_index, piece_data in self.active_downloads.items():
+                peer_id = self._get_piece_downloader(piece_index)
+                if peer_id:
+                    peer_pieces[peer_id] += 1
+
+            # In bảng thống kê
+            print("\nDownload Statistics:")
+            print("-" * 60)
+            print(f"{'Peer ID':<15} {'Pieces Downloaded':<20} {'Final Score':<15}")
+            print("-" * 60)
+            
+            for peer in peer_list:
+                peer_id = peer['peer_id']
+                pieces_count = peer_pieces[peer_id]
+                score = self.peer_scores.get(peer_id, 0.0)
+                print(f"{peer_id:<15} {pieces_count:<20} {score:<15.2f}")
+            
+            print("-" * 60)
+            print(f"Total pieces downloaded: {len(self.completed_pieces)}")
+            print(f"Failed attempts: {sum(self.failed_pieces.values())}")
+            
+        except Exception as e:
+            log_event("ERROR", f"Error printing stats: {e}", "error")
+
+    def _get_piece_downloader(self, piece_index: int) -> Optional[str]:
+        """Lấy peer_id của peer đã download piece này"""
+        try:
+            # Tìm trong download history
+            for peer_id, pieces in self.download_history.items():
+                if piece_index in pieces:
+                    return peer_id
+            return None
+        except:
+            return None
