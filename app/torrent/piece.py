@@ -18,10 +18,7 @@ def generate_pieces(file_path: str, piece_length: int) -> List[bytes]:
 
 def verify_piece(piece_data: bytes, piece_index: int, torrent_data: Dict):
     try:
-        # log_event("PEER", f"Piece length in torrent: {torrent_data['info']['piece_length']}", "info")
-        # log_event("PEER", f"Actual piece data length: {len(piece_data)}", "info")
-        # log_event("PEER", f"First 20 bytes of piece data: {piece_data[:20].hex()}", "info")
-        
+       
         # 1. Lấy base64 string từ torrent data và decode về bytes
         pieces_base64 = torrent_data['info']['pieces']  # base64 string
         all_pieces = base64.b64decode(pieces_base64)    # bytes của concatenated hashes

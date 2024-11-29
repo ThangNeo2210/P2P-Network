@@ -68,7 +68,7 @@ class PeerNode:
         self.peer_scores = defaultdict(float)  # Score for peer selection
         self.server_socket = None  # Thêm biến để lưu server socket
         # Đăng ký signal handler
-        signal.signal(signal.SIGINT, self._signal_handler)
+        # signal.signal(signal.SIGINT, self._signal_handler)
 
         self.peer_assignments = {}  # Track peer -> thread assignments
         

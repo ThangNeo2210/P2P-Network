@@ -12,6 +12,7 @@ import uuid
 import socket
 import time
 import json
+import signal
 
 def get_peer_id(input_id: Optional[str] = None) -> str:
     if input_id:
@@ -219,22 +220,26 @@ def start_peer_servers(config_file: str):
         config_file: Đường dẫn đến file config JSON
     """
     try:
-        # Đọc config file
+        # Read config file
         if not os.path.exists(config_file):
             raise ValueError(f"Config file not found: {config_file}")
             
         with open(config_file, 'r') as f:
             peer_configs = json.load(f)
             
-        # Khởi động peer servers
+        
         threads = []
+        peers = []  # Store peer objects
+        
         for peer_id, config in peer_configs.items():
             ip = config.get('ip', Config.TRACKER_HOST)
             port = config.get('port', Config.DEFAULT_PORT)
             
+            peer = PeerNode(ip, port, peer_id)
+            peers.append(peer)
+            
             thread = threading.Thread(
-                target=start_peer_server,
-                args=(peer_id, ip, port),
+                target=peer.start_peer_server,
                 name=f"PeerServer-{peer_id}"
             )
             thread.daemon = True
@@ -243,12 +248,23 @@ def start_peer_servers(config_file: str):
             
             log_event("SYSTEM", f"Started peer server {peer_id} on {ip}:{port}", "success")
             
-        # Đợi tất cả threads
+        # Handle Ctrl+C in main thread
+        def signal_handler(signum, frame):
+            print("\nStopping all peer servers...")
+            for peer in peers:
+                peer.stop_server()
+            sys.exit(0)
+            
+        signal.signal(signal.SIGINT, signal_handler)
+            
+        # Wait for all threads
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
             print("\nStopping all peer servers...")
+            for peer in peers:
+                peer.stop_server()
             
     except Exception as e:
         log_event("ERROR", f"Error starting peer servers: {e}", "error")
