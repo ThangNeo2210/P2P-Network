@@ -27,38 +27,18 @@ def convert_pieces_from_storage(pieces_base64: str) -> List[bytes]:
         return []
 
 def get_info_hash(torrent_file: str) -> Optional[str]:
-    """
-    Get info hash from torrent file.
-    """
     try:
+        # Đọc info_hash trực tiếp từ file torrent
         with open(torrent_file, 'rb') as f:
-            # Đọc file thành bytes trước khi decode
-            torrent_bytes = f.read()
-            if not torrent_bytes:
-                raise ValueError("Empty torrent file")
-                
-            # Decode torrent data
-            data = bencodepy.decode(torrent_bytes)
-            if not data or b'info' not in data:
-                raise ValueError("Invalid torrent file structure")
-                
-            info = data[b'info']
-            return hashlib.sha1(bencodepy.encode(info)).hexdigest()
+            data = bencodepy.decode(f.read())
+            return data[b'info_hash'].decode()
             
     except Exception as e:
         log_event("ERROR", f"Error getting info hash: {e}", "error")
         return None
 
 def generate_info_hash(file_name: str, piece_length: int, pieces: bytes, file_length: int) -> Optional[str]:
-    """
-    Generate info hash từ metadata.
-    
-    Args:
-        file_name: Tên file
-        piece_length: Kích thước mỗi piece
-        pieces: Pieces data đã được encode base64
-        file_length: Kích thước file
-    """
+
     try:
         # Tạo info dict với pieces đã encode
         info = {
@@ -76,15 +56,7 @@ def generate_info_hash(file_name: str, piece_length: int, pieces: bytes, file_le
         return None
 
 def validate_torrent_info(info: Dict) -> bool:
-    """
-    Validate torrent info dictionary.
-    
-    Args:
-        info: Torrent info dictionary
-        
-    Returns:
-        bool: True if valid, False otherwise
-    """
+
     # Các trường bắt buộc trong info dict của torrent file
     required_fields = [b'name', b'piece length', b'length', b'pieces']
     return all(field in info for field in required_fields) 

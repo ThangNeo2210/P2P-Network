@@ -99,15 +99,16 @@ def upload_file(file_path: str, tracker: Tracker, peer_id: str, ip: str, port: i
         log_event("ERROR", f"Error uploading: {e}", "error")
         return False
 
-def download_torrent(torrent_file: str, output_path: str, peer_id: Optional[str] = None, peer_host: str = "127.0.0.1", peer_port: int = 6881,  host: str = Config.TRACKER_HOST, port: int = Config.TRACKER_PORT) -> bool:
-    """Download file từ torrent"""
+def download_torrent(torrent_file: str, output_path: str, peer_id: Optional[str] = None, peer_host: str = Config.PEER_HOST, peer_port: int = Config.DEFAULT_PORT) -> bool:
+    
     try:
+        
         # Khởi tạo peer
         downloader_id = get_peer_id(peer_id)
         peer = PeerNode(peer_host, peer_port, downloader_id)
         
         # Download file
-        if not peer.download_file(torrent_file, output_path, host, port):
+        if not peer.download_file(torrent_file, output_path, Config.TRACKER_HOST, Config.TRACKER_PORT):
             raise Exception("Download failed")
             
         log_event("SYSTEM", f"Successfully downloaded to {output_path}", "success")
@@ -132,7 +133,7 @@ def is_tracker_running(host: str = Config.TRACKER_HOST, port: int = Config.TRACK
 
 def start_peer_server(peer_id: str, host: str, port: int):
     """Khởi động peer server"""
-    peer = PeerNode(host, port, peer_id)
+    peer = PeerNode(host, port, peer_id, change_ip_port=False)
     peer.start_peer_server()
 
 def get_peers_for_torrent(torrent_file: str) -> bool:
@@ -176,7 +177,7 @@ def get_peers_for_torrent(torrent_file: str) -> bool:
         return False
 
 def setup_parser():
-    """Thiết lập argument parser"""
+    
     parser = argparse.ArgumentParser(description="BitTorrent Client")
     
     # Main command
@@ -204,7 +205,7 @@ def setup_parser():
     # Peer options
     peer_group = parser.add_argument_group('Peer options')
     peer_group.add_argument('--peer-id', help='Unique peer ID (optional)')
-    peer_group.add_argument('--peer-host', default=Config.TRACKER_HOST,
+    peer_group.add_argument('--peer-host', default=Config.PEER_HOST,
                          help='Peer host address')
     peer_group.add_argument('--peer-port', type=int, default=Config.DEFAULT_PORT,
                          help='Peer port number')
@@ -213,14 +214,9 @@ def setup_parser():
     return parser
 
 def start_peer_servers(config_file: str):
-    """
-    Khởi động nhiều peer servers từ config file.
-    
-    Args:
-        config_file: Đường dẫn đến file config JSON
-    """
+
     try:
-        # Read config file
+        
         if not os.path.exists(config_file):
             raise ValueError(f"Config file not found: {config_file}")
             
@@ -232,7 +228,7 @@ def start_peer_servers(config_file: str):
         peers = []  # Store peer objects
         
         for peer_id, config in peer_configs.items():
-            ip = config.get('ip', Config.TRACKER_HOST)
+            ip = config.get('ip', Config.PEER_HOST)
             port = config.get('port', Config.DEFAULT_PORT)
             
             peer = PeerNode(ip, port, peer_id)
@@ -268,6 +264,12 @@ def start_peer_servers(config_file: str):
             
     except Exception as e:
         log_event("ERROR", f"Error starting peer servers: {e}", "error")
+
+def read_torrent(torrent_file: str):
+    
+    torrent_handler = TorrentHandler()
+    torrent_data = torrent_handler.read_torrent_file(torrent_file)
+    print(torrent_data)
 
 def main():
     """Main entry point"""
@@ -316,11 +318,10 @@ def main():
             if not args.output:
                 raise ValueError("Output path required for download command")
             
-            print(args.host, args.port)
             if not is_tracker_running(args.host, args.port):
                 raise ValueError("Tracker server is not running")
-                
-            download_torrent(args.torrent, args.output, args.peer_id, args.host, args.port)
+
+            download_torrent(args.torrent, args.output, args.peer_id, args.peer_host, args.peer_port)
 
         elif args.command == 'get':
             if not args.torrent:
@@ -344,3 +345,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    

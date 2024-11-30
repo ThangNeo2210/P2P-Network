@@ -3,6 +3,7 @@
 - Mỗi peer nên có một ID duy nhất để tránh xung đột.
 - File torrent được tạo sẽ lưu trong thư mục `output/torrents/`.
 - File download sẽ được lưu trong thư mục `output/downloads/`
+- Mỗi piece chỉ được thông báo download thành công khi đã verify thành công xong.
 
 ## Config
 Tất cả các config được lưu trong file `app/config.py`

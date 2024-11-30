@@ -13,7 +13,7 @@ from app.config import Config
 import base64
 
 class TorrentHandler:
-    """Handler for torrent file operations"""
+    
     
     def create_torrent_file(self, file_path: str, output_file: str) -> Optional[str]:
 
@@ -44,7 +44,7 @@ class TorrentHandler:
             info_hash = generate_info_hash(
                 file_name,
                 Config.PIECE_LENGTH,
-                encoded_pieces,  # Dùng pieces đã encode để tính info_hash
+                encoded_pieces,  # Dùng pieces đã encode
                 file_length
             )
             if not info_hash:
