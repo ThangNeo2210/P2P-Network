@@ -34,10 +34,7 @@ python main.py tracker --host 127.0.0.1 --port 6969
 
 3. **Khởi động peer servers**:
 ```bash
-# Khởi động một peer server
-python main.py start-peer --peer-id peer1 --peer-port 6881
-
-# Khởi động nhiều peer servers từ config file
+# Khởi động một hoặc nhiều peer servers từ config file
 python main.py start-peer --config peers.json
 ```
 
@@ -70,7 +67,7 @@ python main.py create --input input_folder/
 python main.py upload --input input/myfile.txt --peer-id peer1 --peer-port 6881
 
 # Upload tất cả files trong folder
-python main.py upload --input input_folder/ --peer-id peer1 --peer-port 6881
+python main.py upload --input input/ --peer-id peer1 --peer-port 6881
 
 # Chỉ định IP
 python main.py upload --input input/myfile.txt --peer-id peer1 --peer-port 6881 --peer-host 127.0.0.1

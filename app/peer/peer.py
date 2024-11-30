@@ -440,7 +440,7 @@ class PeerNode:
         if request.attempts < self.retry_count:
             self.download_queue.put((1, request))  # Priority 1 for retries
 
-    def request_peers_from_tracker(self, torrent_file: str) -> List[Dict]:
+    def request_peers_from_tracker(self, torrent_file: str, host: str = Config.TRACKER_HOST, port: int = Config.TRACKER_PORT) -> List[Dict]:
         """
         Gửi request đến tracker để lấy danh sách peers.
         """
@@ -448,7 +448,7 @@ class PeerNode:
             # Kết nối đến tracker
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(Config.SOCKET_TIMEOUT)
-            sock.connect((Config.TRACKER_HOST, Config.TRACKER_PORT))
+            sock.connect((host, port))
             
             # 1. Handshake
             handshake = {
@@ -820,13 +820,15 @@ class PeerNode:
         finally:
             self.stop_server()
 
-    def download_file(self, torrent_file: str, output_path: str) -> bool:
+    def download_file(self, torrent_file: str, output_path: str, host: str = Config.TRACKER_HOST, port: int = Config.TRACKER_PORT) -> bool:
         """
         Download file từ torrent.
         
         Args:
             torrent_file: Đường dẫn file torrent
             output_path: Đường dẫn lưu file
+            host: Host của tracker
+            port: Port của tracker
         """
         try:
             # 1. Đọc thông tin torrent
@@ -835,9 +837,9 @@ class PeerNode:
             if not torrent_data:
                 raise ValueError("Failed to read torrent file")
             log_event("PEER", f"Read torrent file: {torrent_data['info']['name']}", "info")
-            
+            print(torrent_data)
             # 2. Lấy danh sách peers từ tracker
-            peers = self.request_peers_from_tracker(torrent_file)
+            peers = self.request_peers_from_tracker(torrent_file, host, port)
             if not peers:
                 raise ValueError("No peers available")
             

@@ -99,15 +99,15 @@ def upload_file(file_path: str, tracker: Tracker, peer_id: str, ip: str, port: i
         log_event("ERROR", f"Error uploading: {e}", "error")
         return False
 
-def download_torrent(torrent_file: str, output_path: str, peer_id: Optional[str] = None, host: str = Config.TRACKER_HOST, port: int = Config.DEFAULT_PORT) -> bool:
+def download_torrent(torrent_file: str, output_path: str, peer_id: Optional[str] = None, peer_host: str = "127.0.0.1", peer_port: int = 6881,  host: str = Config.TRACKER_HOST, port: int = Config.TRACKER_PORT) -> bool:
     """Download file từ torrent"""
     try:
         # Khởi tạo peer
         downloader_id = get_peer_id(peer_id)
-        peer = PeerNode(host, port, downloader_id)
+        peer = PeerNode(peer_host, peer_port, downloader_id)
         
         # Download file
-        if not peer.download_file(torrent_file, output_path):
+        if not peer.download_file(torrent_file, output_path, host, port):
             raise Exception("Download failed")
             
         log_event("SYSTEM", f"Successfully downloaded to {output_path}", "success")
@@ -315,11 +315,12 @@ def main():
                 raise ValueError("Torrent file path required for download command")
             if not args.output:
                 raise ValueError("Output path required for download command")
-                
+            
+            print(args.host, args.port)
             if not is_tracker_running(args.host, args.port):
                 raise ValueError("Tracker server is not running")
                 
-            download_torrent(args.torrent, args.output, args.peer_id, args.peer_host, args.peer_port)
+            download_torrent(args.torrent, args.output, args.peer_id, args.host, args.port)
 
         elif args.command == 'get':
             if not args.torrent:

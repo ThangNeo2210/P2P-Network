@@ -4,7 +4,7 @@ class Config:
     # Network settings
     DEFAULT_PORT = 6881
     TRACKER_PORT = 6969
-    TRACKER_HOST = "127.0.0.1"
+    TRACKER_HOST = "10.229.11.188"
     
     # MongoDB settings
     DB_URI = "mongodb://localhost:27017/"
